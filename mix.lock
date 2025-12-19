@@ -1,0 +1,5 @@
+%{
+  "avm_scene": {:hex, :avm_scene, "0.2.0", "6677908d8e56b94c024bc8c1bf1fd3a743d7f006c0b0eef15a08b5e460bbf9b2", [:mix, :rebar3], [], "hexpm", "93665ef1504c32b15dcdf59b0078b1e434d21a69151263731c5e44a19362db07"},
+  "exatomvm": {:git, "https://github.com/atomvm/exatomvm.git", "0f9351417673d347d442c3283cca1bfeb47458f6", []},
+  "uf2tool": {:hex, :uf2tool, "1.1.0", "7091931234ca5a256b66ea691983867d51229798622d083f85c1ad779798a734", [:rebar3], [], "hexpm", "1a7e5ca7ef3d19c7a0b0acf3db804b3188e0980884acffa13fd57d733507b73d"},
+}

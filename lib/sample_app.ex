@@ -1,0 +1,2 @@
+defmodule SampleApp do
+end
