@@ -38,7 +38,7 @@ defmodule SampleApp do
       )
 
     {:ok, _pid} =
-      SampleApp.HinomaruScene.start_link([], display_server: {:port, display_port})
+      SampleApp.ClockScene.start_link([], display_server: {:port, display_port})
 
     Process.sleep(:infinity)
   end
