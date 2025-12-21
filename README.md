@@ -24,8 +24,21 @@ A tiny Elixir/AtomVM demo that renders something simple on an SPI LCD using:
 
 ## Build & Flash
 
+Build a custom AtomVM image (with AtomGL) and flash your Elixir app.
+
 ```sh
+# Build + flash AtomVM (ESP32-S3) with AtomGL
+bash scripts/atomvm-esp32.sh all --port /dev/ttyACM0 --baud 115200
+
+# Fetch Elixir deps
 mix deps.get
-mix atomvm.packbeam
+
+# Flash this Elixir app to the device
 mix atomvm.esp32.flash --port /dev/ttyACM0 --baud 115200
+```
+
+Monitor the device in another terminal:
+
+```sh
+bash scripts/monitor-esp32.sh --port /dev/ttyACM0 --baud 115200
 ```
