@@ -4,8 +4,8 @@ A tiny Elixir/AtomVM demo that renders something simple on an SPI LCD using:
 
 - [atomvm/atomgl](https://github.com/atomvm/atomgl)
 - [atomvm/avm_scene](https://github.com/atomvm/avm_scene)
+- [Supported displays](https://github.com/atomvm/atomgl/blob/main/docs/display-drivers.md#supported-displays)
 - Target board: Seeed XIAO-ESP32S3
-- LCD driver: `ilitek,ili9342c`
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/10f79bb1-e0eb-4a64-8de9-8358382f254f" alt="Piyopiyo PCB" width="320">
