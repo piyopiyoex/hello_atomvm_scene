@@ -21,15 +21,15 @@ config :sample_app,
     ]
   ],
   display_port: [
-    width: 320,
-    height: 240,
-    compatible: "ilitek,ili9342c",
-    rotation: 1,
+    width: 480,
+    height: 320,
+    compatible: "ilitek,ili9488",
+    rotation: 3,
     cs: 43,
     dc: 3,
     reset: 2
   ],
-  swap_red_blue: true,
+  swap_red_blue: false,
   touch: [
     poll_ms: 25,
     # :edge  -> emit only on “press down”
@@ -41,8 +41,8 @@ config :sample_app,
       raw_y_min: 80,
       raw_y_max: 1950,
       swap_xy: false,
-      invert_x: false,
-      invert_y: true
+      invert_x: true,
+      invert_y: false
     ]
   ],
   scene:
