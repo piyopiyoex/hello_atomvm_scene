@@ -1,8 +1,9 @@
 defmodule SampleApp.ClockScene do
-  @display_options Application.compile_env(:sample_app, :display_options, [])
+  import SampleApp.Utils, only: [panel_color: 1]
+
+  @display_options Application.compile_env(:sample_app, :display_port, [])
   @width Keyword.get(@display_options, :width, 320)
   @height Keyword.get(@display_options, :height, 240)
-  @color_order Application.compile_env(:sample_app, :color_order, :rgb)
   @tz_offset_seconds 9 * 3600
 
   def start_link(args, opts) do
@@ -179,15 +180,4 @@ defmodule SampleApp.ClockScene do
 
   defp pad2(n) when n < 10, do: "0#{n}"
   defp pad2(n), do: Integer.to_string(n)
-
-  defp panel_color(rgb24) when rgb24 in 0..0xFFFFFF do
-    case @color_order do
-      :rgb ->
-        rgb24
-
-      :bgr ->
-        <<r::8, g::8, b::8>> = <<rgb24::24>>
-        b * 0x10000 + g * 0x100 + r
-    end
-  end
 end

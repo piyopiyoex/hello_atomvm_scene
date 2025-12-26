@@ -1,8 +1,9 @@
 defmodule SampleApp.HinomaruScene do
-  @display_options Application.compile_env(:sample_app, :display_options, [])
-  @width Keyword.get(@display_options, :width, 320)
-  @height Keyword.get(@display_options, :height, 240)
-  @color_order Application.compile_env(:sample_app, :color_order, :rgb)
+  import SampleApp.Utils, only: [panel_color: 1]
+
+  @display_options Application.compile_env(:sample_app, :display_port)
+  @width Keyword.fetch!(@display_options, :width)
+  @height Keyword.fetch!(@display_options, :height)
 
   def start_link(args, opts) do
     :avm_scene.start_link(__MODULE__, args, opts)
@@ -36,17 +37,6 @@ defmodule SampleApp.HinomaruScene do
     for dy <- -radius..radius do
       dx = trunc(:math.sqrt(r2 - dy * dy))
       {:rect, cx - dx, cy + dy, dx * 2 + 1, 1, fill_color}
-    end
-  end
-
-  defp panel_color(rgb24) when rgb24 in 0..0xFFFFFF do
-    case @color_order do
-      :rgb ->
-        rgb24
-
-      :bgr ->
-        <<r::8, g::8, b::8>> = <<rgb24::24>>
-        b * 0x10000 + g * 0x100 + r
     end
   end
 end

@@ -1,8 +1,9 @@
 defmodule SampleApp.TouchCalibrationScene do
-  @display_port_options Application.compile_env(:sample_app, :display_port, [])
-  @width Keyword.get(@display_port_options, :width, 320)
-  @height Keyword.get(@display_port_options, :height, 240)
-  @color_order Application.compile_env(:sample_app, :color_order, :rgb)
+  import SampleApp.Utils, only: [panel_color: 1]
+
+  @display_options Application.compile_env(:sample_app, :display_port)
+  @width Keyword.fetch!(@display_options, :width)
+  @height Keyword.fetch!(@display_options, :height)
 
   @text_x 10
   @line1_y 20
@@ -109,15 +110,4 @@ defmodule SampleApp.TouchCalibrationScene do
   defp clamp_i(v, lo, _hi) when v < lo, do: lo
   defp clamp_i(v, _lo, hi) when v > hi, do: hi
   defp clamp_i(v, _lo, _hi), do: v
-
-  defp panel_color(rgb24) when rgb24 in 0..0xFFFFFF do
-    case @color_order do
-      :rgb ->
-        rgb24
-
-      :bgr ->
-        <<r::8, g::8, b::8>> = <<rgb24::24>>
-        b * 0x10000 + g * 0x100 + r
-    end
-  end
 end

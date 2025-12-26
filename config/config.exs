@@ -29,7 +29,7 @@ config :sample_app,
     dc: 3,
     reset: 2
   ],
-  color_order: :bgr,
+  swap_red_blue: true,
   touch: [
     poll_ms: 25,
     # :edge  -> emit only on “press down”
