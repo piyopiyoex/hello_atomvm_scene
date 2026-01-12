@@ -27,7 +27,7 @@ A tiny Elixir/AtomVM demo that renders something simple on an SPI LCD using:
 Build a custom AtomVM image with AtomGL and flash it to the device:
 
 ```sh
-bash scripts/atomvm-esp32.sh all --port /dev/ttyACM0
+bash scripts/atomvm-esp32.sh build-erase-flash --port /dev/ttyACM0 --target esp32s3
 ```
 
 Flash this Elixir app to the device:
@@ -40,5 +40,5 @@ mix do clean + atomvm.esp32.flash --port /dev/ttyACM0
 Monitor the device in another terminal:
 
 ```sh
-bash scripts/monitor-esp32.sh --port /dev/ttyACM0
+bash scripts/atomvm-esp32.sh monitor --port /dev/ttyACM0
 ```
