@@ -5,7 +5,7 @@ A tiny Elixir/AtomVM demo that renders something simple on an SPI LCD using:
 - [atomvm/atomgl](https://github.com/atomvm/atomgl)
 - [atomvm/avm_scene](https://github.com/atomvm/avm_scene)
 - [Supported displays](https://github.com/atomvm/atomgl/blob/main/docs/display-drivers.md#supported-displays)
-- Target board: Seeed XIAO-ESP32S3
+- Target board: [Piyopiyo PCB](https://github.com/piyopiyoex/piyopiyo-pcb) with [Seeed XIAO-ESP32S3](https://wiki.seeedstudio.com/xiao_esp32s3_getting_started/)
 
 <p align="center">
   <img src="https://github.com/user-attachments/assets/10f79bb1-e0eb-4a64-8de9-8358382f254f" alt="Piyopiyo PCB" width="320">
@@ -24,21 +24,21 @@ A tiny Elixir/AtomVM demo that renders something simple on an SPI LCD using:
 
 ## Build & Flash
 
-Build a custom AtomVM image (with AtomGL) and flash your Elixir app.
+Build a custom AtomVM image with AtomGL and flash it to the device:
 
 ```sh
-# Build + flash AtomVM (ESP32-S3) with AtomGL
-bash scripts/atomvm-esp32.sh all --port /dev/ttyACM0 --baud 115200
+bash scripts/atomvm-esp32.sh all --port /dev/ttyACM0
+```
 
-# Fetch Elixir deps
+Flash this Elixir app to the device:
+
+```sh
 mix deps.get
-
-# Flash this Elixir app to the device
-mix atomvm.esp32.flash --port /dev/ttyACM0 --baud 115200
+mix do clean + atomvm.esp32.flash --port /dev/ttyACM0
 ```
 
 Monitor the device in another terminal:
 
 ```sh
-bash scripts/monitor-esp32.sh --port /dev/ttyACM0 --baud 115200
+bash scripts/monitor-esp32.sh --port /dev/ttyACM0
 ```
