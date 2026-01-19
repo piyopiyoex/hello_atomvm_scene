@@ -47,7 +47,7 @@ config :sample_app,
   ],
   scene:
     Enum.random([
-      SampleApp.ClockScene,
-      SampleApp.HinomaruScene,
-      SampleApp.TouchCalibrationScene
+      SampleApp.ClockScene
+      # SampleApp.HinomaruScene,
+      # SampleApp.TouchCalibrationScene
     ])
