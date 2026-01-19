@@ -5,6 +5,10 @@ defmodule SampleApp do
   @touch_options Application.compile_env(:sample_app, :touch, [])
 
   def start do
+    SampleApp.Provision.maybe_provision()
+
+    SampleApp.WiFi.start()
+
     spi_host = :spi.open(@spi_config)
 
     display_port =
