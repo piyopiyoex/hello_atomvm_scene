@@ -22,13 +22,13 @@ Commands:
   monitor           Serial monitor (delegates to tools/atomvm-esp32-monitor.sh)
   configure         Configure actions (delegates to tools/atomvm-esp32-configure.sh)
   clean             Remove build artifacts
-  build-erase-flash Run: sync -> core -> build -> erase -> flash
+  install           Run: sync -> core -> build -> erase -> flash
 
 Options (used by some commands):
   --idf-dir PATH          ESP-IDF root (contains export.sh)
-  --target TARGET         Target chip (e.g. esp32, esp32s3)  [required for build/build-erase-flash]
-  --port PORT             Serial port (optional; auto-detect if omitted) [erase/flash/monitor/build-erase-flash]
-  --baud BAUD             Baud for erase (default: 921600) [erase/build-erase-flash]
+  --target TARGET         Target chip (e.g. esp32, esp32s3)  [required for build/install]
+  --port PORT             Serial port (optional; auto-detect if omitted) [erase/flash/monitor/install]
+  --baud BAUD             Baud for erase (default: 921600) [erase/install]
   -h, --help              Show help
 EOF
 }
@@ -271,7 +271,7 @@ clean_cmd() {
   [ -d "$esp32_build" ] && run rm -rf "$esp32_build"
 }
 
-build_erase_flash_cmd() {
+install_cmd() {
   local target="" idf_dir="" port="" baud="921600" passthru=()
 
   while [ "$#" -gt 0 ]; do
@@ -314,7 +314,7 @@ build_erase_flash_cmd() {
     esac
   done
 
-  [ -n "$target" ] || die "--target is required for: build-erase-flash"
+  [ -n "$target" ] || die "--target is required for: install"
 
   sync_cmd
   core_cmd
@@ -360,7 +360,7 @@ main() {
   monitor) monitor_cmd "$@" ;;
   configure) configure_cmd "$@" ;;
   clean) clean_cmd "$@" ;;
-  build-erase-flash) build_erase_flash_cmd "$@" ;;
+  install) install_cmd "$@" ;;
   *)
     usage
     die "Unknown command: ${cmd}"
