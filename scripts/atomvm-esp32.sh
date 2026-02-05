@@ -5,362 +5,593 @@ if [ -z "${BASH_VERSION:-}" ]; then
   exec /usr/bin/env bash "$0" "$@"
 fi
 
+# Colors (disabled when not a TTY; respects NO_COLOR)
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_RESET=$'\033[0m'
+  C_BOLD=$'\033[1m'
+  C_RED=$'\033[31m'
+  C_GREEN=$'\033[32m'
+  C_YELLOW=$'\033[33m'
+  C_CYAN=$'\033[36m'
+else
+  C_RESET=""
+  C_BOLD=""
+  C_RED=""
+  C_GREEN=""
+  C_YELLOW=""
+  C_CYAN=""
+fi
+
 usage() {
   local script_name
   script_name="$(basename "$0")"
 
   cat <<EOF
 Usage:
-  ${script_name} <command> [options]
+  ${script_name} <command> [options] [-- IDF_GLOBAL_ARGS...]
 
 Commands:
-  sync              Ensure AtomVM + AtomGL repos exist and patch sdkconfig.defaults
-  core              Build Generic UNIX core libs (boot AVM)
-  build             Build ESP32 + mkimage (delegates to tools/atomvm-esp32-build-image.sh)
-  erase             Erase flash (esptool.py via ESP-IDF)
-  flash             Flash locally-built image (delegates to tools/atomvm-esp32-flash-image.sh)
-  monitor           Serial monitor (delegates to tools/atomvm-esp32-monitor.sh)
-  configure         Configure actions (delegates to tools/atomvm-esp32-configure.sh)
-  clean             Remove build artifacts
-  install           Run: sync -> core -> build -> erase -> flash
+  doctor    Print resolved paths and basic checks (no changes)
+  install   Clone/update deps (AtomVM + AtomGL), patch config, build + mkimage, erase + flash
+  monitor   Attach serial monitor (idf.py monitor)
 
-Options (used by some commands):
-  --idf-dir PATH          ESP-IDF root (contains export.sh)
-  --target TARGET         Target chip (e.g. esp32, esp32s3)  [required for build/install]
-  --port PORT             Serial port (optional; auto-detect if omitted) [erase/flash/monitor/install]
-  --baud BAUD             Baud for erase (default: 921600) [erase/install]
-  -h, --help              Show help
+Options:
+  --idf-dir PATH       ESP-IDF root (contains export.sh). Optional.
+  --target TARGET      esp32 / esp32s3 / etc (default: esp32s3)
+  --port PORT          Serial device (optional; auto-detect if omitted for install/monitor)
+  --baud BAUD          Baud for erase_flash (default: 921600)
+  --no-erase           Skip erase_flash during install
+  -h, --help           Show help
+
+ESP-IDF discovery (if --idf-dir not provided):
+  Uses ESP_IDF_DIR, then IDF_PATH, else defaults to: \$HOME/esp/esp-idf
+
+Notes:
+  AtomVM is expected at: \$HOME/atomvm/AtomVM
+  AtomGL is cloned under: AtomVM/src/platforms/esp32/components/atomgl
 EOF
 }
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
-TOOLS_DIR="${SCRIPT_DIR}/tools"
-
-ATOMVM_WRAPPER_DIR="${ROOT}/atomvm"
-ATOMVM_DIR="${ATOMVM_WRAPPER_DIR}/AtomVM"
-
-ATOMVM_URL="https://github.com/atomvm/AtomVM.git"
-ATOMGL_URL="https://github.com/atomvm/atomgl.git"
-ATOMVM_REF="main"
-ATOMGL_REF="main"
-
-SDKCFG_WANT_IPV6='CONFIG_LWIP_IPV6=y'
-SDKCFG_WANT_PARTITIONS='CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-elixir.csv"'
-
 die() {
-  printf "✖ %s\n" "$*" >&2
+  printf "%b✖%b %s\n" "${C_RED}${C_BOLD}" "${C_RESET}" "$*" >&2
   exit 1
 }
+
+say() {
+  local msg="$*"
+  case "${msg}" in
+  "✔"*)
+    printf "%b%s%b\n" "${C_GREEN}" "${msg}" "${C_RESET}"
+    ;;
+  "Next:"*)
+    printf "%b%s%b\n" "${C_YELLOW}" "${msg}" "${C_RESET}"
+    ;;
+  *)
+    printf "%s\n" "${msg}"
+    ;;
+  esac
+}
+
 run() {
-  printf "+ %s\n" "$*"
+  printf "%b+%b %s\n" "${C_CYAN}${C_BOLD}" "${C_RESET}" "$*"
   "$@"
 }
 
-require_cmd() { command -v "$1" >/dev/null 2>&1 || die "Missing dependency: $1"; }
-require_executable() { [ -x "$1" ] || die "Missing tool: $1"; }
-
-# Usage: append_if_set array_name flag value
-append_if_set() {
-  local -n ary="$1"
-  local flag="$2"
-  local value="$3"
-  if [ -n "$value" ]; then
-    ary+=("$flag" "$value")
+require_cmd() {
+  local cmd="$1"
+  if command -v "${cmd}" >/dev/null 2>&1; then
+    :
+  else
+    die "Missing dependency: ${cmd}"
   fi
+}
+
+script_dir() {
+  cd "$(dirname "${BASH_SOURCE[0]}")" && pwd
+}
+
+repo_root() {
+  cd "$(script_dir)/.." && pwd
 }
 
 resolve_idf_dir() {
   local override="$1"
-  if [ -n "$override" ]; then
-    printf "%s" "$override"
-  elif [ -n "${ESP_IDF_DIR:-}" ]; then
-    printf "%s" "${ESP_IDF_DIR}"
-  elif [ -n "${IDF_PATH:-}" ]; then
-    printf "%s" "${IDF_PATH}"
-  else
-    printf "%s" "${HOME}/esp/esp-idf"
+
+  if [ -n "${override}" ]; then
+    printf "%s" "${override}"
+    return 0
   fi
+
+  if [ -n "${ESP_IDF_DIR:-}" ]; then
+    printf "%s" "${ESP_IDF_DIR}"
+    return 0
+  fi
+
+  if [ -n "${IDF_PATH:-}" ]; then
+    printf "%s" "${IDF_PATH}"
+    return 0
+  fi
+
+  printf "%s" "${HOME}/esp/esp-idf"
 }
 
 auto_port() {
-  local p
+  local p=""
+
   if [ -d /dev/serial/by-id ]; then
     for p in /dev/serial/by-id/*; do
-      [ -e "$p" ] && {
-        printf "%s" "$p"
+      if [ -e "${p}" ]; then
+        printf "%s" "${p}"
         return 0
-      }
+      fi
     done
   fi
 
-  for p in /dev/ttyACM* /dev/ttyUSB*; do
-    [ -e "$p" ] && {
-      printf "%s" "$p"
+  for p in /dev/ttyACM*; do
+    if [ -e "${p}" ]; then
+      printf "%s" "${p}"
       return 0
-    }
+    fi
+  done
+
+  for p in /dev/ttyUSB*; do
+    if [ -e "${p}" ]; then
+      printf "%s" "${p}"
+      return 0
+    fi
   done
 
   return 1
 }
 
-ensure_repo_present() {
-  local name="$1" dir="$2" url="$3" ref="$4"
-
-  if [ -d "${dir}/.git" ]; then
-    return 0
-  fi
-
-  [ ! -e "$dir" ] || die "${name} exists but is not a git repo: ${dir}"
-  mkdir -p "$(dirname "$dir")"
-
-  if [ -n "$ref" ]; then
-    run git clone --filter=blob:none --depth 1 --branch "$ref" "$url" "$dir"
-  else
-    run git clone --filter=blob:none --depth 1 "$url" "$dir"
-  fi
-}
-
-patch_sdkconfig_defaults() {
-  local esp32_dir="${ATOMVM_DIR}/src/platforms/esp32"
-  local path="${esp32_dir}/sdkconfig.defaults"
-  local marker="# Added by hello_atomvm_scene/scripts/atomvm-esp32.sh"
-
-  [ -f "$path" ] || die "sdkconfig.defaults not found: ${path}"
-
-  local want_lines=("$SDKCFG_WANT_IPV6" "$SDKCFG_WANT_PARTITIONS")
-  local line needs_patch="0"
-
-  for line in "${want_lines[@]}"; do
-    grep -qF "$line" "$path" || needs_patch="1"
-  done
-
-  [ "$needs_patch" = "1" ] || return 0
-
-  {
-    printf "\n"
-    printf "%s\n" "$marker"
-    for line in "${want_lines[@]}"; do
-      grep -qF "$line" "$path" || printf "%s\n" "$line"
-    done
-  } >>"$path"
-
-  printf "✔ patched: %s\n" "$path"
-}
-
-idf_env_run() {
-  local idf_dir="$1" workdir="$2"
+with_idf_env() {
+  local idf_dir="$1"
+  local workdir="$2"
   shift 2
 
-  [ -f "${idf_dir}/export.sh" ] || die "ESP-IDF export.sh not found: ${idf_dir}/export.sh"
+  if [ -f "${idf_dir}/export.sh" ]; then
+    :
+  else
+    die "ESP-IDF export.sh not found: ${idf_dir}/export.sh"
+  fi
 
   (
     set -Eeuo pipefail
     # shellcheck source=/dev/null
     source "${idf_dir}/export.sh" >/dev/null 2>&1
-    cd "$workdir"
+
+    if command -v idf.py >/dev/null 2>&1; then
+      :
+    else
+      die "idf.py not found in PATH after sourcing ESP-IDF"
+    fi
+
+    cd "${workdir}"
     "$@"
   )
 }
 
-require_target_arg() {
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-    --target)
-      shift
-      [ "$#" -gt 0 ] || die "--target requires a value"
-      return 0
-      ;;
-    --) break ;;
-    esac
-    shift
-  done
-  die "--target is required for: build"
-}
+# ------------------------
+# Repo layout / deps
+# ------------------------
+ATOMVM_URL="https://github.com/atomvm/AtomVM.git"
+ATOMVM_REF="main"
 
-sync_cmd() {
+ATOMGL_URL="https://github.com/atomvm/atomgl.git"
+ATOMGL_REF="main"
+
+this_repo_root="$(repo_root)"
+
+# Keep AtomVM checkout consistent across projects (case-sensitive on Linux)
+atomvm_wrapper_dir="${HOME}/atomvm"
+atomvm_dir="${atomvm_wrapper_dir}/AtomVM"
+
+esp32_dir="${atomvm_dir}/src/platforms/esp32"
+atomgl_dir="${esp32_dir}/components/atomgl"
+
+ensure_repo_present() {
+  local name="$1"
+  local dir="$2"
+  local url="$3"
+  local ref="$4"
+
+  if [ -d "${dir}/.git" ]; then
+    return 0
+  fi
+
+  if [ -e "${dir}" ]; then
+    die "${name} exists but is not a git repo: ${dir}"
+  fi
+
   require_cmd git
+  mkdir -p "$(dirname "${dir}")"
 
-  ensure_repo_present "AtomVM" "${ATOMVM_DIR}" "${ATOMVM_URL}" "${ATOMVM_REF}"
-
-  local atomgl_dir="${ATOMVM_DIR}/src/platforms/esp32/components/atomgl"
-  ensure_repo_present "AtomGL" "${atomgl_dir}" "${ATOMGL_URL}" "${ATOMGL_REF}"
-
-  patch_sdkconfig_defaults
-}
-
-core_cmd() {
-  local boot_avm="${ATOMVM_DIR}/build/libs/esp32boot/elixir_esp32boot.avm"
-  require_executable "${TOOLS_DIR}/atomvm-build-boot-avm.sh"
-
-  if [ -f "$boot_avm" ]; then
-    printf "✔ core already built: %s\n" "$boot_avm"
+  say "Cloning ${name} into: ${dir}"
+  if [ -n "${ref}" ]; then
+    run git clone --filter=blob:none --depth 1 --branch "${ref}" "${url}" "${dir}"
   else
-    run "${TOOLS_DIR}/atomvm-build-boot-avm.sh" --atomvm-repo "${ATOMVM_WRAPPER_DIR}"
+    run git clone --filter=blob:none --depth 1 "${url}" "${dir}"
   fi
 }
 
-build_cmd() {
-  require_executable "${TOOLS_DIR}/atomvm-esp32-build-image.sh"
-  require_target_arg "$@"
-  run "${TOOLS_DIR}/atomvm-esp32-build-image.sh" --atomvm-repo "${ATOMVM_WRAPPER_DIR}" "$@"
+patch_sdkconfig_defaults() {
+  local path="${esp32_dir}/sdkconfig.defaults"
+
+  if [ -f "${path}" ]; then
+    :
+  else
+    die "sdkconfig.defaults not found: ${path}"
+  fi
+
+  local tag
+  tag="$(basename "${this_repo_root}")"
+
+  local begin="# --- BEGIN ${tag} defaults (managed) ---"
+  local end="# --- END ${tag} defaults ---"
+
+  local tmp=""
+  tmp="$(mktemp)"
+
+  # Remove the managed block if it already exists.
+  if grep -qF "${begin}" "${path}"; then
+    awk -v begin="${begin}" -v end="${end}" '
+      $0 == begin { skipping=1; next }
+      $0 == end   { skipping=0; next }
+      skipping != 1 { print }
+    ' "${path}" >"${tmp}"
+  else
+    cat "${path}" >"${tmp}"
+  fi
+
+  {
+    printf "\n%s\n" "${begin}"
+    cat <<'EOF'
+CONFIG_LWIP_IPV6=y
+CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-elixir.csv"
+EOF
+    printf "%s\n" "${end}"
+  } >>"${tmp}"
+
+  run cp "${path}" "${path}.bak"
+  run mv "${tmp}" "${path}"
+
+  say "✔ patched: ${path}"
 }
 
-flash_cmd() {
-  require_executable "${TOOLS_DIR}/atomvm-esp32-flash-image.sh"
-  run "${TOOLS_DIR}/atomvm-esp32-flash-image.sh" --atomvm-repo "${ATOMVM_WRAPPER_DIR}" "$@"
-}
+ensure_partitions_csv() {
+  # If your workflow stores the CSV elsewhere, add that path here.
+  local candidates=(
+    "${this_repo_root}/partitions-elixir.csv"
+    "${this_repo_root}/scripts/partitions-elixir.csv"
+    "${atomvm_wrapper_dir}/partitions-elixir.csv"
+  )
 
-monitor_cmd() {
-  require_executable "${TOOLS_DIR}/atomvm-esp32-monitor.sh"
-  run "${TOOLS_DIR}/atomvm-esp32-monitor.sh" --atomvm-repo "${ATOMVM_WRAPPER_DIR}" "$@"
-}
-
-configure_cmd() {
-  require_executable "${TOOLS_DIR}/atomvm-esp32-configure.sh"
-  run "${TOOLS_DIR}/atomvm-esp32-configure.sh" --atomvm-repo "${ATOMVM_WRAPPER_DIR}" "$@"
-}
-
-erase_cmd() {
-  local idf_dir_override="" port="" baud="921600"
-
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-    --idf-dir)
-      shift
-      [ "$#" -gt 0 ] || die "--idf-dir requires a value"
-      idf_dir_override="$1"
-      shift
-      ;;
-    --port | -p)
-      shift
-      [ "$#" -gt 0 ] || die "--port requires a value"
-      port="$1"
-      shift
-      ;;
-    --baud)
-      shift
-      [ "$#" -gt 0 ] || die "--baud requires a value"
-      baud="$1"
-      shift
-      ;;
-    --)
-      shift
+  local src=""
+  local c=""
+  for c in "${candidates[@]}"; do
+    if [ -f "${c}" ]; then
+      src="${c}"
       break
-      ;;
-    *) die "Unknown arg for erase: $1" ;;
-    esac
+    fi
   done
 
-  local idf_dir
-  idf_dir="$(resolve_idf_dir "$idf_dir_override")"
-
-  if [ -n "$port" ]; then
-    [ -e "$port" ] || die "Port not found: ${port}"
-  else
-    port="$(auto_port)" || die "Could not auto-detect a serial port. Pass --port."
+  if [ -z "${src}" ]; then
+    # If AtomVM already provides it, fine. Otherwise, this prevents a confusing build error later.
+    if [ -f "${esp32_dir}/partitions-elixir.csv" ]; then
+      return 0
+    fi
+    die "partitions-elixir.csv not found (looked in repo root/scripts/atomvm wrapper). Place it, or adjust ensure_partitions_csv()."
   fi
 
-  idf_env_run "$idf_dir" "${ATOMVM_DIR}/src/platforms/esp32" \
-    esptool.py --chip auto --port "$port" --baud "$baud" erase_flash
+  run cp "${src}" "${esp32_dir}/partitions-elixir.csv"
+  say "✔ ensured: ${esp32_dir}/partitions-elixir.csv"
 }
 
-clean_cmd() {
-  [ "${1:-}" = "--" ] && shift || [ "$#" -eq 0 ] || die "Unknown arg for clean: $1"
-  local esp32_build="${ATOMVM_DIR}/src/platforms/esp32/build"
-  [ -d "$esp32_build" ] && run rm -rf "$esp32_build"
+build_boot_avm_if_needed() {
+  local boot_avm="${atomvm_dir}/build/libs/esp32boot/elixir_esp32boot.avm"
+
+  if [ -f "${boot_avm}" ]; then
+    return 0
+  fi
+
+  require_cmd cmake
+
+  say "Generating boot AVM (Generic UNIX build)"
+  mkdir -p "${atomvm_dir}/build"
+
+  (
+    cd "${atomvm_dir}/build"
+    run cmake ..
+    run cmake --build .
+  )
+
+  if [ -f "${boot_avm}" ]; then
+    :
+  else
+    die "boot AVM missing after build: ${boot_avm}"
+  fi
+}
+
+build_and_mkimage() {
+  local idf_dir="$1"
+  local target="$2"
+  shift 2
+  local extra_args=("$@")
+
+  local boot_avm="${atomvm_dir}/build/libs/esp32boot/elixir_esp32boot.avm"
+  if [ -f "${boot_avm}" ]; then
+    :
+  else
+    die "boot AVM not found: ${boot_avm} (run build_boot_avm_if_needed first)"
+  fi
+
+  with_idf_env "${idf_dir}" "${esp32_dir}" idf.py "${extra_args[@]}" set-target "${target}"
+  with_idf_env "${idf_dir}" "${esp32_dir}" idf.py "${extra_args[@]}" reconfigure
+  with_idf_env "${idf_dir}" "${esp32_dir}" idf.py "${extra_args[@]}" build
+
+  if [ -f "${esp32_dir}/build/mkimage.sh" ]; then
+    :
+  else
+    die "mkimage.sh not found: ${esp32_dir}/build/mkimage.sh"
+  fi
+
+  with_idf_env "${idf_dir}" "${esp32_dir}" bash "./build/mkimage.sh" --boot "${boot_avm}"
+  say "✔ built images under: ${esp32_dir}/build"
+}
+
+erase_flash() {
+  local idf_dir="$1"
+  local port="$2"
+  local baud="$3"
+
+  with_idf_env "${idf_dir}" "${esp32_dir}" esptool.py --chip auto --port "${port}" --baud "${baud}" erase_flash
+}
+
+flash_image() {
+  local idf_dir="$1"
+  local port="$2"
+
+  with_idf_env "${idf_dir}" "${esp32_dir}" bash -Eeuo pipefail -c '
+    port="$1"
+
+    if [ -f "./build/flashimage.sh" ]; then
+      :
+    else
+      echo "✖ Missing ./build/flashimage.sh. Build + mkimage first." >&2
+      exit 1
+    fi
+
+    set +e
+    echo "+ bash ./build/flashimage.sh -p ${port}"
+    bash ./build/flashimage.sh -p "${port}"
+    rc="$?"
+    set -e
+
+    if [ "${rc}" -eq 0 ]; then
+      exit 0
+    fi
+
+    export ESPPORT="${port}"
+    echo "+ ESPPORT=${ESPPORT} bash ./build/flashimage.sh"
+    bash ./build/flashimage.sh
+  ' _ "${port}"
+
+  say "✔ flashed image via flashimage.sh"
+}
+
+doctor_cmd() {
+  local idf_dir="$1"
+  local target="$2"
+  local port_display="$3"
+
+  say ""
+  say "Paths"
+  say "- repo_root:    ${this_repo_root}"
+  say "- atomvm_dir:   ${atomvm_dir}"
+  say "- esp32_dir:    ${esp32_dir}"
+  say "- atomgl_dir:   ${atomgl_dir}"
+  say "- idf_dir:      ${idf_dir}"
+  say ""
+  say "Config"
+  say "- target:       ${target}"
+  say "- port:         ${port_display}"
+  say ""
+  say "Checks"
+
+  if [ -f "${idf_dir}/export.sh" ]; then
+    say "- ESP-IDF:      export.sh found"
+  else
+    say "- ESP-IDF:      missing export.sh"
+  fi
+
+  if [ -d "${atomvm_dir}/.git" ]; then
+    say "- AtomVM:       present"
+  else
+    say "- AtomVM:       missing (install will clone)"
+  fi
+
+  if [ -d "${atomgl_dir}/.git" ]; then
+    say "- AtomGL:       present"
+  else
+    say "- AtomGL:       missing (install will clone)"
+  fi
+
+  if [ -n "${port_display}" ] && [ "${port_display}" != "(not set)" ]; then
+    if [ -e "${port_display}" ]; then
+      say "- Port:         ok"
+    else
+      say "- Port:         not found (${port_display})"
+    fi
+  fi
+
+  say ""
 }
 
 install_cmd() {
-  local target="" idf_dir="" port="" baud="921600" passthru=()
+  local idf_dir="$1"
+  local target="$2"
+  local port="$3"
+  local baud="$4"
+  local do_erase="$5"
+  shift 5
+  local extra_args=("$@")
+
+  if [ -z "${port}" ]; then
+    if port="$(auto_port)"; then
+      say "✔ auto-detected port: ${port}"
+    else
+      die "Could not auto-detect a serial port. Pass --port (e.g. /dev/ttyACM0)."
+    fi
+  fi
+
+  if [ -e "${port}" ]; then
+    :
+  else
+    die "Serial port not found: ${port}"
+  fi
+
+  mkdir -p "${atomvm_wrapper_dir}"
+  ensure_repo_present "AtomVM" "${atomvm_dir}" "${ATOMVM_URL}" "${ATOMVM_REF}"
+  ensure_repo_present "AtomGL" "${atomgl_dir}" "${ATOMGL_URL}" "${ATOMGL_REF}"
+
+  patch_sdkconfig_defaults
+  ensure_partitions_csv
+  build_boot_avm_if_needed
+  build_and_mkimage "${idf_dir}" "${target}" "${extra_args[@]}"
+
+  if [ "${do_erase}" = "1" ]; then
+    say "Erasing flash"
+    erase_flash "${idf_dir}" "${port}" "${baud}"
+  fi
+
+  say "Flashing image"
+  flash_image "${idf_dir}" "${port}"
+
+  say "✔ install complete"
+  say "Next: run the Elixir app flash from this repo (mix atomvm.esp32.flash ...)"
+}
+
+monitor_cmd() {
+  local idf_dir="$1"
+  local port="$2"
+  shift 2
+  local extra_args=("$@")
+
+  if [ -z "${port}" ]; then
+    if port="$(auto_port)"; then
+      say "✔ auto-detected port: ${port}"
+    else
+      die "Could not auto-detect a serial port. Pass --port (e.g. /dev/ttyACM0)."
+    fi
+  fi
+
+  if [ -e "${port}" ]; then
+    :
+  else
+    die "Serial port not found: ${port}"
+  fi
+
+  say "Starting serial monitor"
+  with_idf_env "${idf_dir}" "${esp32_dir}" idf.py -p "${port}" monitor "${extra_args[@]}"
+}
+
+main() {
+  local cmd="${1:-}"
+  if [ -z "${cmd}" ]; then
+    usage
+    return 2
+  fi
+
+  if [ "${cmd}" = "-h" ] || [ "${cmd}" = "--help" ]; then
+    usage
+    return 0
+  fi
+  shift || true
+
+  local idf_dir_override=""
+  local target="esp32s3"
+  local port=""
+  local baud="921600"
+  local do_erase="1"
+  local extra_args=()
 
   while [ "$#" -gt 0 ]; do
     case "$1" in
-    --target)
-      shift
-      [ "$#" -gt 0 ] || die "--target requires a value"
-      target="$1"
-      shift
-      ;;
     --idf-dir)
       shift
-      [ "$#" -gt 0 ] || die "--idf-dir requires a value"
-      idf_dir="$1"
+      if [ "$#" -gt 0 ]; then
+        idf_dir_override="$1"
+        shift
+      else
+        die "--idf-dir requires a value"
+      fi
+      ;;
+    --target)
       shift
+      if [ "$#" -gt 0 ]; then
+        target="$1"
+        shift
+      else
+        die "--target requires a value"
+      fi
       ;;
     --port | -p)
       shift
-      [ "$#" -gt 0 ] || die "--port requires a value"
-      port="$1"
-      shift
+      if [ "$#" -gt 0 ]; then
+        port="$1"
+        shift
+      else
+        die "--port requires a value"
+      fi
       ;;
     --baud)
       shift
-      [ "$#" -gt 0 ] || die "--baud requires a value"
-      baud="$1"
+      if [ "$#" -gt 0 ]; then
+        baud="$1"
+        shift
+      else
+        die "--baud requires a value"
+      fi
+      ;;
+    --no-erase)
+      do_erase="0"
       shift
       ;;
     --)
       shift
       while [ "$#" -gt 0 ]; do
-        passthru+=("$1")
+        extra_args+=("$1")
         shift
       done
       ;;
+    -h | --help)
+      usage
+      return 0
+      ;;
     *)
-      passthru+=("$1")
-      shift
+      die "Unknown option: $1 (use --help)"
       ;;
     esac
   done
 
-  [ -n "$target" ] || die "--target is required for: install"
+  local idf_dir=""
+  idf_dir="$(resolve_idf_dir "${idf_dir_override}")"
 
-  sync_cmd
-  core_cmd
-
-  local build_args=(--target "$target")
-  append_if_set build_args --idf-dir "$idf_dir"
-  build_args+=(-- "${passthru[@]}")
-
-  local erase_args=(--baud "$baud")
-  append_if_set erase_args --idf-dir "$idf_dir"
-  append_if_set erase_args --port "$port"
-  erase_args+=(--)
-
-  local flash_args=()
-  append_if_set flash_args --idf-dir "$idf_dir"
-  append_if_set flash_args --port "$port"
-  flash_args+=(-- "${passthru[@]}")
-
-  build_cmd "${build_args[@]}"
-  erase_cmd "${erase_args[@]}"
-  flash_cmd "${flash_args[@]}"
-}
-
-main() {
-  local cmd="${1:-}"
-
-  if [ -z "$cmd" ]; then
-    usage
-    return 2
+  local port_display="(not set)"
+  if [ -n "${port}" ]; then
+    port_display="${port}"
   fi
-  shift || true
 
-  case "$cmd" in
-  -h | --help)
-    usage
-    return 0
+  case "${cmd}" in
+  doctor)
+    doctor_cmd "${idf_dir}" "${target}" "${port_display}"
     ;;
-  sync) sync_cmd ;;
-  core) core_cmd ;;
-  build) build_cmd "$@" ;;
-  erase) erase_cmd "$@" ;;
-  flash) flash_cmd "$@" ;;
-  monitor) monitor_cmd "$@" ;;
-  configure) configure_cmd "$@" ;;
-  clean) clean_cmd "$@" ;;
-  install) install_cmd "$@" ;;
+  install)
+    install_cmd "${idf_dir}" "${target}" "${port}" "${baud}" "${do_erase}" "${extra_args[@]}"
+    ;;
+  monitor)
+    monitor_cmd "${idf_dir}" "${port}" "${extra_args[@]}"
+    ;;
   *)
     usage
     die "Unknown command: ${cmd}"
