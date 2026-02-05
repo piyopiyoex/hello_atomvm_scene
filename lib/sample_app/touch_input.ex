@@ -1,4 +1,6 @@
 defmodule SampleApp.TouchInput do
+  @compile {:no_warn_undefined, :spi}
+
   @xpt2046_cmd_read_x 0xD0
   @xpt2046_cmd_read_y 0x90
 

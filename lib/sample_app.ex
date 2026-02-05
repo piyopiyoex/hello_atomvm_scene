@@ -1,4 +1,6 @@
 defmodule SampleApp do
+  @compile {:no_warn_undefined, :spi}
+
   @spi_config Application.compile_env!(:sample_app, :spi)
   @display_port_options Application.compile_env!(:sample_app, :display_port)
   @scene Application.compile_env!(:sample_app, :scene)
