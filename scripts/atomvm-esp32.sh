@@ -32,7 +32,7 @@ Usage:
 
 Commands:
   doctor    Print resolved paths and basic checks (no changes)
-  install   Clone/update deps (AtomVM + AtomGL), patch config, build + mkimage, erase + flash
+  install   Clone/update deps (AtomVM + AtomGL), write project config, build + mkimage, erase + flash
   monitor   Attach serial monitor (idf.py monitor)
 
 Options:
@@ -49,6 +49,11 @@ ESP-IDF discovery (if --idf-dir not provided):
 Notes:
   AtomVM is expected at: \$HOME/atomvm/AtomVM
   AtomGL is cloned under: AtomVM/src/platforms/esp32/components/atomgl
+  Project SDKCONFIG override file is written to:
+    <repo_root>/.atomvm_esp32.sdkconfig.defaults
+
+Ref pinning:
+  Set ATOMVM_REF and/or ATOMGL_REF to a branch, tag, or full 40-char SHA.
 EOF
 }
 
@@ -75,6 +80,10 @@ say() {
 run() {
   printf "%b+%b %s\n" "${C_CYAN}${C_BOLD}" "${C_RESET}" "$*"
   "$@"
+}
+
+run_quiet() {
+  "$@" >/dev/null 2>&1
 }
 
 require_cmd() {
@@ -171,14 +180,31 @@ with_idf_env() {
   )
 }
 
+print_file_if_present() {
+  local label="$1"
+  local path="$2"
+
+  if [ -f "${path}" ]; then
+    say "- ${label}: ${path}"
+    run cat "${path}"
+  else
+    say "- ${label}: missing (${path})"
+  fi
+}
+
+is_sha40() {
+  local ref="$1"
+  [[ "${ref}" =~ ^[0-9a-f]{40}$ ]]
+}
+
 # ------------------------
 # Repo layout / deps
 # ------------------------
 ATOMVM_URL="https://github.com/atomvm/AtomVM.git"
-ATOMVM_REF="main"
+ATOMVM_REF="${ATOMVM_REF:-main}"
 
 ATOMGL_URL="https://github.com/atomvm/atomgl.git"
-ATOMGL_REF="main"
+ATOMGL_REF="${ATOMGL_REF:-main}"
 
 this_repo_root="$(repo_root)"
 
@@ -188,6 +214,8 @@ atomvm_dir="${atomvm_wrapper_dir}/AtomVM"
 
 esp32_dir="${atomvm_dir}/src/platforms/esp32"
 atomgl_dir="${esp32_dir}/components/atomgl"
+
+project_sdkconfig_overrides="${this_repo_root}/.atomvm_esp32.sdkconfig.defaults"
 
 ensure_repo_present() {
   local name="$1"
@@ -207,84 +235,70 @@ ensure_repo_present() {
   mkdir -p "$(dirname "${dir}")"
 
   say "Cloning ${name} into: ${dir}"
-  if [ -n "${ref}" ]; then
+
+  if [ -n "${ref}" ] && ! is_sha40 "${ref}"; then
     run git clone --filter=blob:none --depth 1 --branch "${ref}" "${url}" "${dir}"
   else
     run git clone --filter=blob:none --depth 1 "${url}" "${dir}"
   fi
 }
 
-patch_sdkconfig_defaults() {
-  local path="${esp32_dir}/sdkconfig.defaults"
+ensure_repo_ref() {
+  local name="$1"
+  local dir="$2"
+  local ref="$3"
+  local desired_sha=""
+  local current_sha=""
 
-  if [ -f "${path}" ]; then
+  if [ -z "${ref}" ]; then
+    return 0
+  fi
+
+  if [ -d "${dir}/.git" ]; then
     :
   else
-    die "sdkconfig.defaults not found: ${path}"
+    die "${name} repo not found: ${dir}"
   fi
 
-  local tag
-  tag="$(basename "${this_repo_root}")"
+  require_cmd git
 
-  local begin="# --- BEGIN ${tag} defaults (managed) ---"
-  local end="# --- END ${tag} defaults ---"
-
-  local tmp=""
-  tmp="$(mktemp)"
-
-  # Remove the managed block if it already exists.
-  if grep -qF "${begin}" "${path}"; then
-    awk -v begin="${begin}" -v end="${end}" '
-      $0 == begin { skipping=1; next }
-      $0 == end   { skipping=0; next }
-      skipping != 1 { print }
-    ' "${path}" >"${tmp}"
+  if is_sha40 "${ref}"; then
+    if git -C "${dir}" rev-parse --verify "${ref}^{commit}" >/dev/null 2>&1; then
+      desired_sha="${ref}"
+    else
+      run git -C "${dir}" fetch --depth 1 origin "${ref}"
+      desired_sha="$(git -C "${dir}" rev-parse --verify FETCH_HEAD)"
+    fi
   else
-    cat "${path}" >"${tmp}"
+    if run_quiet git -C "${dir}" fetch --depth 1 origin "refs/heads/${ref}:refs/remotes/origin/${ref}"; then
+      desired_sha="$(git -C "${dir}" rev-parse --verify "refs/remotes/origin/${ref}^{commit}")"
+    elif run_quiet git -C "${dir}" fetch --depth 1 origin "refs/tags/${ref}:refs/tags/${ref}"; then
+      desired_sha="$(git -C "${dir}" rev-parse --verify "refs/tags/${ref}^{commit}")"
+    elif git -C "${dir}" rev-parse --verify "${ref}^{commit}" >/dev/null 2>&1; then
+      desired_sha="$(git -C "${dir}" rev-parse --verify "${ref}^{commit}")"
+    else
+      die "Could not resolve ${name} ref: ${ref}"
+    fi
   fi
 
-  {
-    printf "\n%s\n" "${begin}"
-    cat <<'EOF'
-CONFIG_LWIP_IPV6=y
-CONFIG_PARTITION_TABLE_CUSTOM_FILENAME="partitions-elixir.csv"
-EOF
-    printf "%s\n" "${end}"
-  } >>"${tmp}"
+  current_sha="$(git -C "${dir}" rev-parse --verify HEAD)"
 
-  run cp "${path}" "${path}.bak"
-  run mv "${tmp}" "${path}"
-
-  say "✔ patched: ${path}"
+  if [ "${current_sha}" = "${desired_sha}" ]; then
+    say "✔ ${name} pinned: ${ref} ($(printf "%s" "${desired_sha}" | cut -c1-12))"
+  else
+    say "Pinning ${name} to: ${ref} ($(printf "%s" "${desired_sha}" | cut -c1-12))"
+    run git -C "${dir}" checkout --detach "${desired_sha}"
+  fi
 }
 
-ensure_partitions_csv() {
-  # If your workflow stores the CSV elsewhere, add that path here.
-  local candidates=(
-    "${this_repo_root}/partitions-elixir.csv"
-    "${this_repo_root}/scripts/partitions-elixir.csv"
-    "${atomvm_wrapper_dir}/partitions-elixir.csv"
-  )
+ensure_project_sdkconfig_defaults() {
+  cat >"${project_sdkconfig_overrides}" <<EOF
+# Generated by $(basename "$0")
+# Project-specific ESP-IDF config overrides for AtomVM ESP32 builds
+CONFIG_I2C_SKIP_LEGACY_CONFLICT_CHECK=y
+EOF
 
-  local src=""
-  local c=""
-  for c in "${candidates[@]}"; do
-    if [ -f "${c}" ]; then
-      src="${c}"
-      break
-    fi
-  done
-
-  if [ -z "${src}" ]; then
-    # If AtomVM already provides it, fine. Otherwise, this prevents a confusing build error later.
-    if [ -f "${esp32_dir}/partitions-elixir.csv" ]; then
-      return 0
-    fi
-    die "partitions-elixir.csv not found (looked in repo root/scripts/atomvm wrapper). Place it, or adjust ensure_partitions_csv()."
-  fi
-
-  run cp "${src}" "${esp32_dir}/partitions-elixir.csv"
-  say "✔ ensured: ${esp32_dir}/partitions-elixir.csv"
+  say "✔ wrote sdkconfig overrides: ${project_sdkconfig_overrides}"
 }
 
 build_boot_avm_if_needed() {
@@ -301,8 +315,8 @@ build_boot_avm_if_needed() {
 
   (
     cd "${atomvm_dir}/build"
-    run cmake ..
-    run cmake --build .
+    run cmake -S "${atomvm_dir}" -B "${atomvm_dir}/build"
+    run cmake --build "${atomvm_dir}/build"
   )
 
   if [ -f "${boot_avm}" ]; then
@@ -325,9 +339,19 @@ build_and_mkimage() {
     die "boot AVM not found: ${boot_avm} (run build_boot_avm_if_needed first)"
   fi
 
-  with_idf_env "${idf_dir}" "${esp32_dir}" idf.py "${extra_args[@]}" set-target "${target}"
-  with_idf_env "${idf_dir}" "${esp32_dir}" idf.py "${extra_args[@]}" reconfigure
-  with_idf_env "${idf_dir}" "${esp32_dir}" idf.py "${extra_args[@]}" build
+  local defaults_env_value="sdkconfig.defaults;${project_sdkconfig_overrides}"
+
+  with_idf_env \
+    "${idf_dir}" \
+    "${esp32_dir}" \
+    env "SDKCONFIG_DEFAULTS=${defaults_env_value}" \
+    idf.py "${extra_args[@]}" -DATOMVM_ELIXIR_SUPPORT=on set-target "${target}"
+
+  with_idf_env \
+    "${idf_dir}" \
+    "${esp32_dir}" \
+    env "SDKCONFIG_DEFAULTS=${defaults_env_value}" \
+    idf.py "${extra_args[@]}" build
 
   if [ -f "${esp32_dir}/build/mkimage.sh" ]; then
     :
@@ -335,7 +359,12 @@ build_and_mkimage() {
     die "mkimage.sh not found: ${esp32_dir}/build/mkimage.sh"
   fi
 
-  with_idf_env "${idf_dir}" "${esp32_dir}" bash "./build/mkimage.sh" --boot "${boot_avm}"
+  with_idf_env \
+    "${idf_dir}" \
+    "${esp32_dir}" \
+    env "SDKCONFIG_DEFAULTS=${defaults_env_value}" \
+    bash "./build/mkimage.sh"
+
   say "✔ built images under: ${esp32_dir}/build"
 }
 
@@ -395,6 +424,8 @@ doctor_cmd() {
   say "Config"
   say "- target:       ${target}"
   say "- port:         ${port_display}"
+  say "- atomvm_ref:   ${ATOMVM_REF}"
+  say "- atomgl_ref:   ${ATOMGL_REF}"
   say ""
   say "Checks"
 
@@ -425,7 +456,6 @@ doctor_cmd() {
   fi
 
   say ""
-
   say "Inspect"
 
   if [ -d "${esp32_dir}/components" ]; then
@@ -437,13 +467,13 @@ doctor_cmd() {
 
   say ""
 
-  if [ -f "${esp32_dir}/sdkconfig.defaults" ]; then
-    say "- sdkconfig.defaults: ${esp32_dir}/sdkconfig.defaults"
-    run cat "${esp32_dir}/sdkconfig.defaults"
-  else
-    say "- sdkconfig.defaults: missing (${esp32_dir}/sdkconfig.defaults)"
-  fi
+  print_file_if_present "sdkconfig.defaults.in" "${esp32_dir}/sdkconfig.defaults.in"
+  say ""
 
+  print_file_if_present "sdkconfig.defaults" "${esp32_dir}/sdkconfig.defaults"
+  say ""
+
+  print_file_if_present "project sdkconfig overrides" "${project_sdkconfig_overrides}"
   say ""
 }
 
@@ -472,10 +502,12 @@ install_cmd() {
 
   mkdir -p "${atomvm_wrapper_dir}"
   ensure_repo_present "AtomVM" "${atomvm_dir}" "${ATOMVM_URL}" "${ATOMVM_REF}"
-  ensure_repo_present "AtomGL" "${atomgl_dir}" "${ATOMGL_URL}" "${ATOMGL_REF}"
+  ensure_repo_ref "AtomVM" "${atomvm_dir}" "${ATOMVM_REF}"
 
-  patch_sdkconfig_defaults
-  ensure_partitions_csv
+  ensure_repo_present "AtomGL" "${atomgl_dir}" "${ATOMGL_URL}" "${ATOMGL_REF}"
+  ensure_repo_ref "AtomGL" "${atomgl_dir}" "${ATOMGL_REF}"
+
+  ensure_project_sdkconfig_defaults
   build_boot_avm_if_needed
   build_and_mkimage "${idf_dir}" "${target}" "${extra_args[@]}"
 
